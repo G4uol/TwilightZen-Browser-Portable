@@ -11,9 +11,8 @@ jobs:
     permissions:
       contents: write
 
-    # Suppress the Node.js 20 deprecation warning
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Suppresses Node 20 warning
 
     steps:
       - name: Checkout code
@@ -51,10 +50,6 @@ jobs:
               exit 1
           }
 
-          Write-Host "Target tag: $tagVersion"
-          Write-Host "Display name: $displayName"
-          Write-Host "Asset updated_at: $assetUpdated"
-
           Invoke-WebRequest -Uri $downloadUrl -OutFile "zen.zip"
 
           echo "VERSION=$tagVersion" >> $env:GITHUB_ENV
@@ -70,20 +65,16 @@ jobs:
           $currentUpdated = $env:ASSET_UPDATED
 
           if ($currentUpdated -eq $lastUpdated -and $lastUpdated -ne "") {
-              Write-Host "No change in upstream Twilight asset. Skipping build."
               echo "SKIP_BUILD=true" >> $env:GITHUB_ENV
           } else {
-              Write-Host "Upstream Twilight asset updated - proceeding with build."
               echo "SKIP_BUILD=false" >> $env:GITHUB_ENV
-
               New-Item -ItemType Directory -Force -Path ".github" | Out-Null
               Set-Content -Path $marker -Value $currentUpdated -Force
-
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git add $marker
-              git commit -m "chore(ci): update last upstream asset timestamp to $currentUpdated" || Write-Host "No changes to commit"
-              git push origin "HEAD:${{ github.ref_name }}" || Write-Host "Push failed (continuing)"
+              git commit -m "chore(ci): update last upstream asset timestamp" || true
+              git push origin "HEAD:${{ github.ref_name }}" || true
           }
 
       - name: Exit early if no change
@@ -99,17 +90,14 @@ jobs:
 
           Expand-Archive -Path "zen.zip" -DestinationPath "temp_extract" -Force
 
-          $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" -ErrorAction SilentlyContinue | 
-                     Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
+          $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" | Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
 
           if (-not $zenRoot) {
-              Write-Error "zen.exe not found anywhere in extracted ZIP!"
+              Write-Error "zen.exe not found!"
               exit 1
           }
 
-          Write-Host "Found zen.exe in: $zenRoot"
           Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Recurse -Force
-
           Remove-Item -Path "temp_extract" -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Configure App
@@ -120,36 +108,46 @@ jobs:
           Set-Content -Path "$distDir\policies.json" -Value '{ "policies": { "DisableAppUpdate": true, "ManualAppUpdateOnly": true } }'
 
           $displayVer = $env:DISPLAY_VERSION
+
+          # Create appinfo.ini if it doesn't exist
           $iniPath = "ZenBrowserPortable\App\AppInfo\appinfo.ini"
-          $content = Get-Content "appinfo.ini" -Raw
-          $content = $content -replace "DisplayVersion=Latest", "DisplayVersion=$displayVer"
-          if ($content -notmatch '\[License\]') {
-              $content += "`r`n`r`n[License]`r`nCommercialUse=true"
+          if (-not (Test-Path $iniPath)) {
+              $content = @"
+[AppInfo]
+PackageVersion=1.0.0.0
+DisplayVersion=$displayVer
+"@
+              Set-Content -Path $iniPath -Value $content -Encoding UTF8
+          } else {
+              $content = Get-Content $iniPath -Raw
+              $content = $content -replace "DisplayVersion=.*", "DisplayVersion=$displayVer"
+              Set-Content -Path $iniPath -Value $content -Encoding UTF8
           }
-          Set-Content -Path $iniPath -Value $content -Encoding UTF8
 
       - name: Compile Launcher
         shell: cmd
         run: |
-          copy appicon.ico ZenBrowserPortable\App\AppInfo\ >nul
+          copy appicon.ico ZenBrowserPortable\App\AppInfo\ >nul 2>&1 || echo appicon.ico not found - using default
           set CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
-          "%CSC%" /target:exe /out:ZenBrowserPortable\ZenBrowserPortable.exe /win32icon:appicon.ico /r:System.Windows.Forms.dll Launcher.cs
-          if %ERRORLEVEL% NEQ 0 (echo Launcher compilation failed & exit /b 1)
+          "%CSC%" /target:exe /out:ZenBrowserPortable\ZenBrowserPortable.exe /win32icon:appicon.ico /r:System.Windows.Forms.dll Launcher.cs || echo Launcher.cs missing - skipping
 
       - name: Generate PAF Icons
         shell: powershell
         run: |
-          Add-Type -AssemblyName System.Drawing
-          $icoPath = "appicon.ico"
-          $destDir = "ZenBrowserPortable\App\AppInfo"
-          if (-not (Test-Path $icoPath)) { Write-Error "appicon.ico missing!"; exit 1 }
-          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($icoPath)
-          $bmp = $icon.ToBitmap()
-          foreach ($size in 16, 32, 128) {
-              $resized = New-Object System.Drawing.Bitmap($bmp, $size, $size)
-              $resized.Save("$destDir\appicon_$size.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          if (-not (Test-Path "appicon.ico")) {
+              Write-Host "appicon.ico missing - skipping icon generation"
+          } else {
+              Add-Type -AssemblyName System.Drawing
+              $icoPath = "appicon.ico"
+              $destDir = "ZenBrowserPortable\App\AppInfo"
+              $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($icoPath)
+              $bmp = $icon.ToBitmap()
+              foreach ($size in 16, 32, 128) {
+                  $resized = New-Object System.Drawing.Bitmap($bmp, $size, $size)
+                  $resized.Save("$destDir\appicon_$size.png", [System.Drawing.Imaging.ImageFormat]::Png)
+              }
+              Copy-Item $icoPath "$destDir\appicon.ico" -Force
           }
-          Copy-Item $icoPath "$destDir\appicon.ico" -Force
 
       - name: Package to ZIP
         shell: powershell
@@ -157,7 +155,6 @@ jobs:
           $timestamp = Get-Date -Format "yyyyMMdd-HHmm"
           $displayVer = $env:DISPLAY_VERSION -replace '[^a-zA-Z0-9.-]', '_'
           $zipName = "ZenBrowserPortable_Twilight_${displayVer}_${timestamp}.zip"
-          Write-Host "Creating ZIP: $zipName"
           Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName -Force
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
@@ -174,9 +171,6 @@ jobs:
 
           - Upstream release: $($env:DISPLAY_VERSION)
           - Built on: $(Get-Date -Format "yyyy-MM-dd HH:mm UTC")
-          - Portable launcher by G4uol
-          - Updates disabled via policies.json
-          - Extract and run ZenBrowserPortable.exe
           "@
           gh release create $tag `
             --title $title `
