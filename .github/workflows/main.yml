@@ -3,7 +3,7 @@ name: Build Zen Browser Portable
 on:
   schedule:
     - cron: '0 6 * * *'   # 06:00 UTC daily
-  workflow_dispatch:      # This enables the "Run workflow" button
+  workflow_dispatch:      # Manual trigger button
 
 jobs:
   build:
@@ -11,7 +11,7 @@ jobs:
     permissions:
       contents: write
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true # Fixes the Node deprecation warning
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true 
     
     steps:
       - name: Checkout code
@@ -22,7 +22,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Use the new twilight-1 tag
           $url = "https://api.github.com/repos/zen-browser/desktop/releases/tags/twilight-1"
           $headers = @{ "Authorization" = "token $env:GH_TOKEN" }
           
@@ -35,12 +34,10 @@ jobs:
 
           $downloadUrl = ""
           $displayName = $release.name
-          $assetUpdated = ""
 
           foreach ($asset in $release.assets) {
               if ($asset.name -eq "zen.win-x86_64.zip") {
                   $downloadUrl = $asset.browser_download_url
-                  $assetUpdated = $asset.updated_at
                   break
               }
           }
@@ -50,50 +47,60 @@ jobs:
               exit 1
           }
 
-          Write-Host "Display name: $displayName | Updated: $assetUpdated"
-          
-          # Download the file
           Invoke-WebRequest -Uri $downloadUrl -OutFile "zen.zip"
-          
-          # Save variables for next steps
           echo "DISPLAY_VERSION=$displayName" >> $env:GITHUB_ENV
-          echo "ASSET_UPDATED=$assetUpdated" >> $env:GITHUB_ENV
 
       - name: Extract and Build
         shell: powershell
         run: |
-          # Create folder structure
-          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
-          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\AppInfo"
-          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data"
+          # Setup folder structure
+          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App"
+          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data\Profile1"
           
-          # Extract
+          # Extract and locate zen.exe
           Expand-Archive -Path "zen.zip" -DestinationPath "temp_extract" -Force
           $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" | Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
           
-          Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Recurse -Force
-          
-          # Clean up temp
+          # Move browser files to App folder
+          Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App" -Recurse -Force
           Remove-Item -Path "temp_extract" -Recurse -Force
 
       - name: Configure and Package
         shell: powershell
         run: |
-          # Disable updates in policies.json
-          $distDir = "ZenBrowserPortable\App\ZenBrowser\distribution"
+          # 1. Disable updates to keep it portable
+          $distDir = "ZenBrowserPortable\App\distribution"
           New-Item -ItemType Directory -Force -Path $distDir
           Set-Content -Path "$distDir\policies.json" -Value '{ "policies": { "DisableAppUpdate": true, "ManualAppUpdateOnly": true } }'
           
-          # Create ZIP
+          # 2. CREATE THE .BAT LAUNCHER (Automatically included in ZIP)
+          $batContent = @"
+          @echo off
+          set "BASE_DIR=%~dp0"
+          set "APP_DIR=%BASE_DIR%App"
+          set "DATA_DIR=%BASE_DIR%Data\Profile1"
+          if exist "%APP_DIR%\zen.exe" (
+              start "" /d "%APP_DIR%" "zen.exe" -profile "%DATA_DIR%" -no-remote
+              exit
+          ) else (
+              echo Error: zen.exe not found in %APP_DIR%
+              pause
+          )
+          "@
+          Set-Content -Path "ZenBrowserPortable\Zen-Portable-Windows.bat" -Value $batContent
+          
+          # 3. Create ZIP with timestamp
           $timestamp = Get-Date -Format "yyyyMMdd-HHmm"
-          $zipName = "ZenBrowserPortable_Twilight_latest_$timestamp.zip"
+          $zipName = "ZenBrowserPortable_Twilight_$timestamp.zip"
           Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName -Force
+          
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+          echo "TIMESTAMP=$timestamp" >> $env:GITHUB_ENV
 
-      - name: Create Release
+      - name: Create Unique Release
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "twilight-$(Get-Date -Format 'yyyyMMdd-HHmm')"
-          gh release create $tag --title "Zen Twilight Portable ($($env:DISPLAY_VERSION))" --notes "Automated build of Zen Browser Twilight-1." "$($env:ZIP_NAME)"
+          $tag = "v$($env:TIMESTAMP)"
+          gh release create $tag --title "Zen Twilight ($($env:DISPLAY_VERSION)) - $($env:TIMESTAMP)" --notes "Automated build. Includes Zen-Portable-Windows.bat launcher." "$($env:ZIP_NAME)"
