@@ -8,259 +8,104 @@ command_exists() {
 # Check and install dependencies
 echo "Checking for required dependencies..."
 
-# Check for curl
-if ! command_exists curl; then
-    echo "curl not found, installing..."
-    # Detect package manager and install curl
-    if command_exists apt-get; then
-        sudo apt-get install -y curl
-    elif command_exists yum; then
-        sudo yum install -y curl
-    elif command_exists pacman; then
-        sudo pacman -S --noconfirm curl
-    else
-        echo "Error: Unable to install curl, please install it manually."
-        exit 1
+deps=("curl" "jq" "tar" "xz" "zip")
+for dep in "${deps[@]}"; do
+    if ! command_exists "$dep"; then
+        echo "$dep not found, installing..."
+        if command_exists apt-get; then
+            sudo apt-get update && sudo apt-get install -y "$dep"
+        elif command_exists yum; then
+            sudo yum install -y "$dep"
+        elif command_exists pacman; then
+            sudo pacman -S --noconfirm "$dep"
+        else
+            echo "Error: Unable to install $dep, please install it manually."
+            exit 1
+        fi
     fi
-fi
+done
 
-# Check for jq
-if ! command_exists jq; then
-    echo "jq not found, installing..."
-    # Detect package manager and install jq
-    if command_exists apt-get; then
-        sudo apt-get install -y jq
-    elif command_exists yum; then
-        sudo yum install -y jq
-    elif command_exists pacman; then
-        sudo pacman -S --noconfirm jq
-    else
-        echo "Error: Unable to install jq, please install it manually."
-        exit 1
-    fi
-fi
-
-# Check for 7z
+# Special check for 7z (often named p7zip-full)
 if ! command_exists 7z; then
-    echo "7z (p7zip) not found, installing..."
-    # Detect package manager and install 7z
+    echo "7z not found, installing..."
     if command_exists apt-get; then
         sudo apt-get install -y p7zip-full
-    elif command_exists yum; then
-        sudo yum install -y p7zip
-    elif command_exists pacman; then
-        sudo pacman -S --noconfirm p7zip
     else
-        echo "Error: Unable to install 7z, please install it manually."
-        exit 1
-    fi
-fi
-
-# Check for tar
-if ! command_exists tar; then
-    echo "tar not found, installing..."
-    # Detect package manager and install tar
-    if command_exists apt-get; then
-        sudo apt-get install -y tar
-    elif command_exists yum; then
-        sudo yum install -y tar
-    elif command_exists pacman; then
-        sudo pacman -S --noconfirm tar
-    else
-        echo "Error: Unable to install tar, please install it manually."
-        exit 1
-    fi
-fi
-
-# Check for xz-utils
-if ! command_exists xz; then
-    echo "xz-utils not found, installing..."
-    # Detect package manager and install xz-utils
-    if command_exists apt-get; then
-        sudo apt-get update && sudo apt-get install -y xz-utils
-    elif command_exists yum; then
-        sudo yum install -y xz
-    elif command_exists pacman; then
-        sudo pacman -S --noconfirm xz
-    else
-        echo "Error: Unable to install xz-utils, please install it manually."
-        exit 1
+        sudo yum install -y p7zip || sudo pacman -S --noconfirm p7zip
     fi
 fi
 
 # Prompt user for platform choice
-echo "Select the platform(s) you want the resulting folder to support:"
+echo "Select the platform(s) for the portable build:"
 echo "1) Linux"
 echo "2) Windows"
 echo "3) Both"
-read -p "Enter the number of your choice (1, 2, or 3): " platform_choice
+read -p "Enter choice (1, 2, or 3): " platform_choice
 
-# Set the directory name based on user input
-if [ "$platform_choice" == "1" ]; then
-    output_dir="zen-linux-portable"
-elif [ "$platform_choice" == "2" ]; then
-    output_dir="zen-windows-portable"
-else
-    output_dir="zen-portable"
-fi
+# Set the directory name
+case $platform_choice in
+    1) output_dir="zen-linux-portable" ;;
+    2) output_dir="zen-windows-portable" ;;
+    *) output_dir="zen-portable" ;;
+esac
 
 # Set up directory structure
-mkdir -p "$output_dir"/data
-# Create 5 profile directories
-for i in {1..5}; do
-    mkdir -p "$output_dir/data/profile$i"
-done
-mkdir -p "$output_dir"/launcher
-
-# Conditionally create platform-specific directories
-if [ "$platform_choice" == "2" ] || [ "$platform_choice" == "3" ]; then
-    mkdir -p "$output_dir"/app/win
-fi
-if [ "$platform_choice" == "1" ] || [ "$platform_choice" == "3" ]; then
-    mkdir -p "$output_dir"/app/lin
-fi
+mkdir -p "$output_dir/data"
+for i in {1..5}; do mkdir -p "$output_dir/data/profile$i"; done
 
 # Change into the output directory
+BASE_DIR=$(pwd)
 cd "$output_dir"
 
-# Handle platform-specific logic
+# Handle Linux Build
 if [ "$platform_choice" == "1" ] || [ "$platform_choice" == "3" ]; then
-    # Download Linux release and extract it
-    echo "Downloading Linux release..."
-    curl -s https://api.github.com/repos/zen-browser/desktop/releases/latest | jq -r '.assets[] | select(.name == "zen.linux-x86_64.tar.xz") | .browser_download_url' | xargs curl -LO
+    mkdir -p app/lin
+    echo "Downloading Latest Linux release..."
+    curl -s https://api.github.com/repos/zen-browser/desktop/releases/latest | jq -r '.assets[] | select(.name | contains("linux-x86_64.tar.xz")) | .browser_download_url' | xargs curl -LO
     echo "Extracting Linux release..."
-    tar -xJvf zen.linux-x86_64.tar.xz -C app/lin
-
-    # Preserve 'zen' executable from Linux release before removing the 'zen' folder
-    echo "Handling 'zen' folder in Linux release..."
-    if [ -d "app/lin/zen" ]; then
-        # Move the zen executable out temporarily before copying other files
-        if [ -f "app/lin/zen/zen" ]; then
-            mv app/lin/zen/zen app/lin/zen-executable
-        fi
-
-        # Copy all contents from 'zen' to 'lin'
-        cp -r app/lin/zen/* app/lin/
-
-        # Remove the 'zen' folder (but the 'zen' executable was moved out already)
-        rm -rf app/lin/zen
-
-        # Restore the 'zen' executable back into 'lin'
-        if [ -f "app/lin/zen-executable" ]; then
-            mv app/lin/zen-executable app/lin/zen
-        fi
-    else
-        echo "Error: 'zen' folder not found after extraction!"
-        exit 1
-    fi
-fi
-
-if [ "$platform_choice" == "2" ] || [ "$platform_choice" == "3" ]; then
-    # Download Windows release and extract it
-    echo "Downloading Windows release..."
-    curl -s https://api.github.com/repos/zen-browser/desktop/releases/latest | jq -r '.assets[] | select(.name == "zen.installer.exe") | .browser_download_url' | xargs curl -LO
-    echo "Extracting Windows release..."
-    7z x zen.installer.exe -oapp/win
-
-    # Copy contents from 'core' folder to 'win'
-    echo "Copying contents from 'core' folder to 'win'..."
-    if [ -d "app/win/core" ]; then
-        cp -r app/win/core/* app/win/
-    else
-        echo "Error: 'core' folder not found after extraction!"
-        exit 1
-    fi
-fi
-
-# Create profile.ini with 5 profiles
-echo "Creating profile.ini..."
-cat <<EOF > data/profile.ini
-[General]
-StartWithLastProfile=1
-Version=2
-
-[Profile0]
-Name=Profile1
-IsRelative=1
-Path=../data/profile1
-Default=1
-
-[Profile1]
-Name=Profile2
-IsRelative=1
-Path=../data/profile2
-
-[Profile2]
-Name=Profile3
-IsRelative=1
-Path=../data/profile3
-
-[Profile3]
-Name=Profile4
-IsRelative=1
-Path=../data/profile4
-
-[Profile4]
-Name=Profile5
-IsRelative=1
-Path=../data/profile5
-EOF
-
-# Create Linux launcher script
-if [ "$platform_choice" == "1" ] || [ "$platform_choice" == "3" ]; then
-    echo "Creating Linux launcher script..."
-    cat <<EOF > launcher/zenlinuxportable.sh
+    tar -xJvf zen.linux-x86_64.tar.xz -C app/lin --strip-components=1
+    
+    echo "Creating Linux launcher..."
+    cat <<EOF > Zen-Portable-Linux.sh
 #!/bin/bash
-APP_DIR="\$(dirname "\$0")/../app/lin"
-DATA_DIR="\$(dirname "\$0")/../data"
-"\$APP_DIR/zen" --profile "\$DATA_DIR/profile1" --no-remote &>/dev/null &
+DIR="\$(dirname "\$(readlink -f "\$0")")"
+"\$DIR/app/lin/zen" --profile "\$DIR/data/profile1" --no-remote
 EOF
-
-    # Ensure Linux launcher is executable
-    chmod +x launcher/zenlinuxportable.sh
-    chmod +x app/lin/zen  # Ensure the Zen executable is also executable
+    chmod +x Zen-Portable-Linux.sh app/lin/zen
 fi
 
-# Create Windows launcher script
+# Handle Windows Build
 if [ "$platform_choice" == "2" ] || [ "$platform_choice" == "3" ]; then
-    echo "Creating Windows launcher script..."
-    cat <<EOF > launcher/zenwindowsportable.bat
+    mkdir -p app/win
+    echo "Downloading Latest Windows release..."
+    curl -s https://api.github.com/repos/zen-browser/desktop/releases/latest | jq -r '.assets[] | select(.name == "zen.installer.exe") | .browser_download_url' | xargs curl -LO
+    echo "Extracting Windows installer..."
+    7z x zen.installer.exe -oapp/win/temp
+    
+    # Zen installer puts files in a 'core' folder; move them up to keep paths short
+    mv app/win/temp/core/* app/win/
+    rm -rf app/win/temp
+    
+    echo "Creating Windows launcher..."
+    cat <<EOF > Zen-Portable-Windows.bat
 @echo off
-:: Set application directory
-set APP_DIR=%~dp0..\app
-:: Set data directory
-set DATA_DIR=%~dp0..\data
+set "ROOT=%~dp0"
+set "APP=%ROOT%app\win\zen.exe"
+set "DATA=%ROOT%data\profile1"
 
-:: Ensure zen.exe exists
-if not exist "%APP_DIR%\win\zen.exe" (
-    echo Error: zen.exe not found in "%APP_DIR%\win".
-    pause
-    exit /b 1
-)
+if not exist "%DATA%" mkdir "%DATA%"
 
-:: Ensure profile directory exists
-if not exist "%DATA_DIR%\profile1" (
-    echo Profile directory not found. Creating one at "%DATA_DIR%\profile1".
-    mkdir "%DATA_DIR%\profile1"
-)
-
-:: Launch Zen Browser in portable mode
-"%APP_DIR%\win\zen.exe" -profile "%DATA_DIR%\profile1" -no-remote
+start "" "%APP%" -profile "%DATA%" -no-remote
 EOF
 fi
 
-# Clean up downloaded files
-echo "Cleaning up downloaded files..."
+# Cleanup and Packaging
+echo "Cleaning up..."
 rm -f zen.installer.exe zen.linux-x86_64.tar.xz
+cd "$BASE_DIR"
 
-# Go back to the parent directory where the output directory exists
-cd ..
-
-# Create the zip archive before cleaning up
-echo "Creating the zip archive..."
+echo "Creating ZIP archive..."
 zip -r "$output_dir.zip" "$output_dir"
 
-# Clean up the output directory after zipping
-rm -rf "$output_dir"
-
-echo "Zen Portable version has been created and packaged successfully!"
+# Uncomment the line below if you want the folder deleted after the zip is made
+# rm -rf
