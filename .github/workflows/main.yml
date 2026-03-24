@@ -11,6 +11,10 @@ jobs:
     permissions:
       contents: write
 
+    # Suppress the Node.js 20 deprecation warning
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -65,9 +69,6 @@ jobs:
           $lastUpdated = if (Test-Path $marker) { Get-Content $marker -Raw } else { "" }
           $currentUpdated = $env:ASSET_UPDATED
 
-          Write-Host "Last known asset updated_at: $lastUpdated"
-          Write-Host "Current asset updated_at: $currentUpdated"
-
           if ($currentUpdated -eq $lastUpdated -and $lastUpdated -ne "") {
               Write-Host "No change in upstream Twilight asset. Skipping build."
               echo "SKIP_BUILD=true" >> $env:GITHUB_ENV
@@ -81,12 +82,8 @@ jobs:
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git add $marker
-              git commit -m "chore(ci): update last upstream asset timestamp to $currentUpdated" || {
-                  Write-Host "Commit failed (no changes). Skipping push."
-              }
-              git push origin "HEAD:${{ github.ref_name }}" || {
-                  Write-Host "Push failed. Continuing anyway."
-              }
+              git commit -m "chore(ci): update last upstream asset timestamp to $currentUpdated" || Write-Host "No changes to commit"
+              git push origin "HEAD:${{ github.ref_name }}" || Write-Host "Push failed (continuing)"
           }
 
       - name: Exit early if no change
@@ -99,11 +96,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
           New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\AppInfo"
           New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data"
-          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Other\Source"
 
           Expand-Archive -Path "zen.zip" -DestinationPath "temp_extract" -Force
 
-          $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" -ErrorAction SilentlyContinue |
+          $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" -ErrorAction SilentlyContinue | 
                      Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
 
           if (-not $zenRoot) {
@@ -111,12 +107,8 @@ jobs:
               exit 1
           }
 
-          Write-Host "Found zen.exe in: $zenRoot - moving contents to App\ZenBrowser"
+          Write-Host "Found zen.exe in: $zenRoot"
           Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Recurse -Force
-          Copy-Item -Path "$zenRoot\.*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Force -ErrorAction SilentlyContinue
-
-          Write-Host "Files now in App\ZenBrowser:"
-          Get-ChildItem -Path "ZenBrowserPortable\App\ZenBrowser" -Recurse | Select-Object FullName
 
           Remove-Item -Path "temp_extract" -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -128,20 +120,13 @@ jobs:
           Set-Content -Path "$distDir\policies.json" -Value '{ "policies": { "DisableAppUpdate": true, "ManualAppUpdateOnly": true } }'
 
           $displayVer = $env:DISPLAY_VERSION
-          Set-Content -Path "ZenBrowserPortable\App\AppInfo\version.txt" -Value $displayVer
-
           $iniPath = "ZenBrowserPortable\App\AppInfo\appinfo.ini"
           $content = Get-Content "appinfo.ini" -Raw
           $content = $content -replace "DisplayVersion=Latest", "DisplayVersion=$displayVer"
-          if ($content -notmatch '\[License\].*CommercialUse=true') {
+          if ($content -notmatch '\[License\]') {
               $content += "`r`n`r`n[License]`r`nCommercialUse=true"
           }
           Set-Content -Path $iniPath -Value $content -Encoding UTF8
-
-      - name: Create Help File
-        shell: powershell
-        run: |
-          Set-Content -Path "ZenBrowserPortable\help.html" -Value "<html><body><h1>Zen Browser Portable (Twilight)</h1><p>Built from Zen Twilight release.</p></body></html>"
 
       - name: Compile Launcher
         shell: cmd
@@ -192,8 +177,6 @@ jobs:
           - Portable launcher by G4uol
           - Updates disabled via policies.json
           - Extract and run ZenBrowserPortable.exe
-
-          Always latest via daily schedule.
           "@
           gh release create $tag `
             --title $title `
