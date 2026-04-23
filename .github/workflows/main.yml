@@ -2,8 +2,8 @@ name: Build Zen Browser Portable
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # Runs at 06:00 UTC daily
-  workflow_dispatch:      # Allows you to click "Run workflow" manually
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch:      # Manual trigger
 
 jobs:
   build:
@@ -23,27 +23,35 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # The API URL (Must be plural 'tags' for API access)
           $url = "https://api.github.com/repos/zen-browser/desktop/releases/tags/twilight-1"
           $release = Invoke-RestMethod -Uri $url -Method Get
           
-          # NEW LOGIC: We track the unique Commit SHA instead of the file date
-          $currentHash = $release.target_commitish
-          
-          # Use a wildcard '*' to find the zip even if they change the name slightly
+          # Find the zip file (using a wildcard in case the name changes slightly)
           $asset = $release.assets | Where-Object { $_.name -like "zen.win-x86_64*.zip" } | Select-Object -First 1
+          
+          # DEBUG: Print all assets so we can see if the zip is missing
+          Write-Host "Found Assets:"
+          $release.assets | ForEach-Object { Write-Host " - $($_.name) (ID: $($_.id))" }
+
+          if ($null -eq $asset) {
+              Write-Error "Could not find a Windows .zip asset in this release! Check the names above."
+              exit 1
+          }
+
+          # NEW HASH LOGIC: Use the unique Asset ID. If they re-upload, this ID ALWAYS changes.
+          $currentHash = "ID_$($asset.id)"
           
           $lastHash = ""
           if (Test-Path "last_build_hash.txt") { $lastHash = Get-Content "last_build_hash.txt" }
 
-          Write-Host "Current Zen Commit: $currentHash"
-          Write-Host "Last Built Commit: $lastHash"
+          Write-Host "Current Asset Fingerprint: $currentHash"
+          Write-Host "Last Built Fingerprint: $lastHash"
 
           if ($currentHash -eq $lastHash) {
-              Write-Host "No new code changes found. Skipping build."
+              Write-Host "No new file detected (ID matches). Skipping..."
               echo "SKIP_BUILD=true" >> $env:GITHUB_ENV
           } else {
-              Write-Host "New code detected! Triggering build..."
+              Write-Host "New build detected! (New Asset ID: $($asset.id))"
               echo "SKIP_BUILD=false" >> $env:GITHUB_ENV
               echo "DOWNLOAD_URL=$($asset.browser_download_url)" >> $env:GITHUB_ENV
               echo "ASSET_HASH=$currentHash" >> $env:GITHUB_ENV
@@ -63,7 +71,7 @@ jobs:
           $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" | Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
           Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App" -Recurse -Force
           
-          # Portable Launcher
+          # Launcher
           $batContent = "@echo off`nset `"BASE_DIR=%~dp0`"`ncd /d `"%BASE_DIR%`"`nset `"APP_DIR=%BASE_DIR%App`"`nset `"DATA_DIR=%BASE_DIR%Data\Profile1`"`nif exist `"%APP_DIR%\zen.exe`" (`n    start `"`" /d `"%APP_DIR%`" `"zen.exe`" -profile `"%DATA_DIR%`" -no-remote`n    exit`n) else (`n    echo Error: zen.exe not found.`n    pause`n)"
           Set-Content -Path "ZenBrowserPortable\Zen-Portable-Windows.bat" -Value $batContent
 
@@ -73,7 +81,6 @@ jobs:
           
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
           echo "TIMESTAMP=$timestamp" >> $env:GITHUB_ENV
-          # Save the new Commit Hash to the file
           $env:ASSET_HASH | Out-File "last_build_hash.txt"
 
       - name: Update Hash in Repo
@@ -82,7 +89,7 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add last_build_hash.txt
-          git commit -m "New Zen Commit: ${{ env.ASSET_HASH }} [skip ci]" || echo "No changes"
+          git commit -m "Tracking New Asset: ${{ env.ASSET_HASH }} [skip ci]" || echo "No changes"
           git push
 
       - name: Create Unique Release
@@ -92,4 +99,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = "v$($env:TIMESTAMP)"
-          gh release create $tag --title "Zen Twilight - $($env:TIMESTAMP)" --notes "Based on Zen Commit: $($env:ASSET_HASH)" "$($env:ZIP_NAME)"
+          gh release create $tag --title "Zen Twilight - $($env:TIMESTAMP)" --notes "Portable build. Asset ID: $($env:ASSET_HASH)" "$($env:ZIP_NAME)"
