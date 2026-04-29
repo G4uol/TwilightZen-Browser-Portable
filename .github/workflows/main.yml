@@ -23,25 +23,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 1. Get the actual Code Commit SHA for the twilight-1 tag
+          $commitUrl = "https://api.github.com/repos/zen-browser/desktop/commits/twilight-1"
+          $commitData = Invoke-RestMethod -Uri $commitUrl -Method Get
+          $commitSha = $commitData.sha
+
+          # 2. Get the Release Asset
           $url = "https://api.github.com/repos/zen-browser/desktop/releases/tags/twilight-1"
           $release = Invoke-RestMethod -Uri $url -Method Get
           
-          # Target the specific Windows zip (avoiding installers or portable stubs)
           $asset = $release.assets | Where-Object { $_.name -like "zen.win-x86_64.zip" } | Select-Object -First 1
-          
-          # If the standard name isn't found, try the most likely alternative
           if ($null -eq $asset) {
               $asset = $release.assets | Where-Object { $_.name -like "zen*.win-x86_64.zip" } | Select-Object -First 1
           }
 
-          Write-Host "Checking assets..."
           if ($null -eq $asset) {
-              Write-Error "CRITICAL: Could not find zen.win-x86_64.zip"
+              Write-Error "CRITICAL: Could not find the Windows engine zip."
               exit 1
           }
 
-          # FINGERPRINT: Combine ID and the exact 'updated_at' time
-          $currentHash = "ID_$($asset.id)_TIME_$($asset.updated_at)"
+          # THE ULTIMATE FINGERPRINT: Code Commit SHA + Asset ID
+          $currentHash = "COMMIT_$($commitSha)_ASSET_$($asset.id)"
           
           $lastHash = ""
           if (Test-Path "last_build_hash.txt") { $lastHash = Get-Content "last_build_hash.txt" }
@@ -50,10 +52,10 @@ jobs:
           Write-Host "Last Build: $lastHash"
 
           if ($currentHash -eq $lastHash) {
-              Write-Host "Match found. No new version to build."
+              Write-Host "Match found. No new code committed. Skipping..."
               echo "SKIP_BUILD=true" >> $env:GITHUB_ENV
           } else {
-              Write-Host "NEW VERSION DETECTED! Proceeding to build..."
+              Write-Host "NEW CODE DETECTED! Proceeding to build..."
               echo "SKIP_BUILD=false" >> $env:GITHUB_ENV
               echo "DOWNLOAD_URL=$($asset.browser_download_url)" >> $env:GITHUB_ENV
               echo "ASSET_HASH=$currentHash" >> $env:GITHUB_ENV
@@ -70,11 +72,9 @@ jobs:
           
           Expand-Archive -Path "zen.zip" -DestinationPath "temp_extract" -Force
           
-          # Locate the exe inside the zip
           $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" | Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
           Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App" -Recurse -Force
           
-          # Launcher with parenthetical safety
           $batContent = "@echo off`nset `"BASE_DIR=%~dp0`"`ncd /d `"%BASE_DIR%`"`nset `"APP_DIR=%BASE_DIR%App`"`nset `"DATA_DIR=%BASE_DIR%Data\Profile1`"`nif exist `"%APP_DIR%\zen.exe`" (`n    start `"`" /d `"%APP_DIR%`" `"zen.exe`" -profile `"%DATA_DIR%`" -no-remote`n    exit`n) else (`n    echo Error: zen.exe not found.`n    pause`n)"
           Set-Content -Path "ZenBrowserPortable\Zen-Portable-Windows.bat" -Value $batContent
 
@@ -92,7 +92,7 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add last_build_hash.txt
-          git commit -m "Update build hash: ${{ env.ASSET_HASH }} [skip ci]" || echo "No changes"
+          git commit -m "Update build hash [skip ci]" || echo "No changes"
           git push
 
       - name: Create Release
