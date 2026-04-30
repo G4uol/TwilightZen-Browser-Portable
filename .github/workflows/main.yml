@@ -82,7 +82,7 @@ jobs:
           $zipName = "ZenBrowserPortable_Twilight_$timestamp.zip"
           Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName -Force
           
-          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV,
           echo "TIMESTAMP=$timestamp" >> $env:GITHUB_ENV
           $env:ASSET_HASH | Out-File "last_build_hash.txt"
 
