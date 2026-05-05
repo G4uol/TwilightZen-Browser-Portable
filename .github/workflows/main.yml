@@ -23,14 +23,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 0. Authentication to prevent GitHub Rate Limiting
+          $headers = @{
+              "Authorization" = "token $env:GH_TOKEN"
+              "Accept" = "application/vnd.github.v3+json"
+          }
+
           # 1. Get the actual Code Commit SHA for the twilight-1 tag
           $commitUrl = "https://api.github.com/repos/zen-browser/desktop/commits/twilight-1"
-          $commitData = Invoke-RestMethod -Uri $commitUrl -Method Get
+          $commitData = Invoke-RestMethod -Uri $commitUrl -Headers $headers -Method Get
           $commitSha = $commitData.sha
 
           # 2. Get the Release Asset
           $url = "https://api.github.com/repos/zen-browser/desktop/releases/tags/twilight-1"
-          $release = Invoke-RestMethod -Uri $url -Method Get
+          $release = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
           
           $asset = $release.assets | Where-Object { $_.name -like "zen.win-x86_64.zip" } | Select-Object -First 1
           if ($null -eq $asset) {
@@ -42,8 +48,10 @@ jobs:
               exit 1
           }
 
-          # THE ULTIMATE FINGERPRINT: Code Commit SHA + Asset ID
-          $currentHash = "COMMIT_$($commitSha)_ASSET_$($asset.id)"
+          # THE OMNI-FINGERPRINT: Commit SHA + Release Title + Asset ID
+          # Stripping spaces from the title so it formats nicely in the hash text file
+          $releaseTitle = $release.name -replace " ", "_"
+          $currentHash = "COMMIT_$($commitSha)_TITLE_$($releaseTitle)_ASSET_$($asset.id)"
           
           $lastHash = ""
           if (Test-Path "last_build_hash.txt") { $lastHash = Get-Content "last_build_hash.txt" }
@@ -52,10 +60,10 @@ jobs:
           Write-Host "Last Build: $lastHash"
 
           if ($currentHash -eq $lastHash) {
-              Write-Host "Match found. No new code committed. Skipping..."
+              Write-Host "Match found. No new release detected. Skipping..."
               echo "SKIP_BUILD=true" >> $env:GITHUB_ENV
           } else {
-              Write-Host "NEW CODE DETECTED! Proceeding to build..."
+              Write-Host "NEW UPDATE DETECTED! Proceeding to build..."
               echo "SKIP_BUILD=false" >> $env:GITHUB_ENV
               echo "DOWNLOAD_URL=$($asset.browser_download_url)" >> $env:GITHUB_ENV
               echo "ASSET_HASH=$currentHash" >> $env:GITHUB_ENV
@@ -82,7 +90,7 @@ jobs:
           $zipName = "ZenBrowserPortable_Twilight_$timestamp.zip"
           Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName -Force
           
-          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV,
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
           echo "TIMESTAMP=$timestamp" >> $env:GITHUB_ENV
           $env:ASSET_HASH | Out-File "last_build_hash.txt"
 
